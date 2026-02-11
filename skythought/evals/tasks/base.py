@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import pandas as pd
 import yaml
 from datasets import Dataset as HFDataset
-from datasets import load_dataset
+from datasets import DatasetDict, load_dataset, load_from_disk
 from pydantic import BaseModel, Field
 
 ConversationType = List[Dict[str, Any]]
@@ -83,17 +84,59 @@ class TaskHandler(ABC):
         return conversations
 
     def load_dataset(self, subset=None, split=None, **kwargs) -> HFDataset:
-        # check if the path provided is a valid URL
-        parsed = urlparse(self.task_config.dataset_path)
-        if not parsed.scheme:
-            # HF dataset
-            dataset = load_dataset(
-                path=self.task_config.dataset_path,
-                name=subset if subset else self.task_config.dataset_subset,
-                split=split if split else self.task_config.dataset_split,
-                **self.task_config.dataset_kwargs,
-            )
-        else:
+        dataset_path = self.task_config.dataset_path
+        parsed = urlparse(dataset_path)
+        dataset_kwargs = self.task_config.dataset_kwargs
+        split_name = split if split else self.task_config.dataset_split
+        subset_name = subset if subset else self.task_config.dataset_subset
+
+        # If dataset_path points to local data, support both:
+        # 1) datasets.save_to_disk(...) directories, and
+        # 2) local json/jsonl files.
+        local_path = Path(
+            parsed.path if parsed.scheme == "file" else dataset_path
+        ).expanduser()
+        if not local_path.exists() and not parsed.scheme:
+            repo_root = Path(__file__).resolve().parents[3]
+            candidate = (repo_root / dataset_path).expanduser()
+            if candidate.exists():
+                local_path = candidate
+        if local_path.exists():
+            if local_path.is_dir() and (
+                (local_path / "dataset_info.json").exists()
+                or (local_path / "dataset_dict.json").exists()
+            ):
+                dataset = load_from_disk(str(local_path))
+                if isinstance(dataset, DatasetDict):
+                    if split_name is not None:
+                        if split_name not in dataset:
+                            raise ValueError(
+                                f"Split '{split_name}' not found in local dataset at {local_path}. "
+                                f"Available splits: {list(dataset.keys())}"
+                            )
+                        dataset = dataset[split_name]
+                    elif len(dataset.keys()) == 1:
+                        dataset = next(iter(dataset.values()))
+                    else:
+                        raise ValueError(
+                            f"Local dataset at {local_path} contains multiple splits {list(dataset.keys())}. "
+                            "Please set dataset_split in task config."
+                        )
+            elif local_path.is_file() and local_path.suffix.lower() in {".json", ".jsonl"}:
+                if split is not None or subset is not None:
+                    raise ValueError(
+                        "Local JSON/JSONL dataset does not support loading arguments like `split`, `subset`"
+                    )
+                dataset = load_dataset("json", data_files=[str(local_path)])["train"]
+            else:
+                # Fallback for local files/folders supported by load_dataset.
+                dataset = load_dataset(
+                    path=str(local_path),
+                    name=subset_name,
+                    split=split_name,
+                    **dataset_kwargs,
+                )
+        elif parsed.scheme in ("http", "https"):
             # Try to load URL
             # Only JSON supported for now
             if split is not None or subset is not None:
@@ -101,9 +144,15 @@ class TaskHandler(ABC):
                     "URL-based dataset does not support loading arguments like `split`, `subset`"
                 )
             # By default, Huggingface will create a DatasetDict object with "train" split
-            dataset = load_dataset("json", data_files=[self.task_config.dataset_path])[
-                "train"
-            ]
+            dataset = load_dataset("json", data_files=[dataset_path])["train"]
+        else:
+            # HF dataset
+            dataset = load_dataset(
+                path=dataset_path,
+                name=subset_name,
+                split=split_name,
+                **dataset_kwargs,
+            )
 
         # add an index column efficiently with map
         dataset = dataset.map(add_idx_map, with_indices=True)

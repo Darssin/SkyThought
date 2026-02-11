@@ -1,0 +1,10 @@
+handler: ifeval
+# Uses the local Evalverse IFEval input file in this repository.
+dataset_path: "skythought/evalverse-IFEval/data/input_data.jsonl"
+dataset_subset: null
+dataset_split: null
+dataset_kwargs: {}
+question_key: prompt
+answer_key: null
+templating_parameters: {}
+
