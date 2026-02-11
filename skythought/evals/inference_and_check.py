@@ -185,9 +185,11 @@ def inference(
         responses = [Response.from_openai_response(response) for response in responses]
     elif backend == Backend.VLLM:
         batch_size = kwargs.get("batch_size", 1)
-        engine_kwargs = copy.deepcopy(backend_params.to_dict())
-        engine_kwargs["model"] = model_config.model_id
-        llm = LLM(**engine_kwargs)
+        llm = kwargs.get("vllm_engine")
+        if llm is None:
+            engine_kwargs = copy.deepcopy(backend_params.to_dict())
+            engine_kwargs["model"] = model_config.model_id
+            llm = LLM(**engine_kwargs)
 
         response_in_batches = [
             llm.chat(
@@ -207,6 +209,15 @@ def inference(
         raise ValueError(f"Invalid backend: {backend}")
 
     return responses
+
+
+def create_vllm_engine(
+    backend_params: BackendParameters,
+    model_config: ModelConfig,
+) -> LLM:
+    engine_kwargs = copy.deepcopy(backend_params.to_dict())
+    engine_kwargs["model"] = model_config.model_id
+    return LLM(**engine_kwargs)
 
 
 def generate_responses_for_dataset(
